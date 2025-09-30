@@ -1,4 +1,5 @@
-name: Windows EXE Build
+name: Windows EXE Build (auto-detect)
+
 on:
   push:
     branches: [ main, master ]
@@ -7,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,15 +20,35 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Locate project files
+        id: locate
+        run: |
+          $main = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter main.py | Select-Object -First 1
+          if (-not $main) { throw "main.py not found anywhere in repo" }
+          $projDir = $main.DirectoryName
+          Write-Host "ProjectDir=$projDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # requirements.txt in same dir or workspace root
+          $req = Get-ChildItem -Path $projDir -Filter requirements.txt -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $req) { $req = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter requirements.txt -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if ($req) { Write-Host "Requirements=$($req.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append }
+          else { Write-Host "Requirements=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append }
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if ('${{ steps.locate.outputs.Requirements }}') {
+            pip install -r "${{ steps.locate.outputs.Requirements }}"
+          }
           pip install pyinstaller==6.10.0
 
-      - name: Build app with PyInstaller
+      - name: Build with PyInstaller
         run: |
-          pyinstaller --noconfirm --clean --onedir --name "WhatsAppSender" --noconsole main.py
+          $projDir='${{ steps.locate.outputs.ProjectDir }}'
+          $main = Join-Path $projDir 'main.py'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Set-Location $projDir
+          pyinstaller --noconfirm --clean --onedir --name "WhatsAppSender" --noconsole --distpath "$dist" "$main"
 
       - name: Upload portable app
         uses: actions/upload-artifact@v4
@@ -33,18 +57,21 @@ jobs:
           path: dist/WhatsAppSender
 
       - name: Install Inno Setup (optional)
-        run: |
-          choco install innosetup --yes
+        run: choco install innosetup --yes
 
-      - name: Build installer (optional)
-        shell: pwsh
+      - name: Build installer if .iss exists
         run: |
-          $iscc64 = "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe"
-          $iscc = if (Test-Path $iscc64) { $iscc64 } else { "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
-          if (Test-Path $iscc) {
-            & "$iscc" "build/installer.iss" /DAppVersion=${{ github.run_number }} /DSourceDir="dist/WhatsAppSender" /DOutputDir="dist"
+          $iss = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter installer.iss -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($iss) {
+            $iscc64 = "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe"
+            $iscc = (Test-Path $iscc64) ? $iscc64 : "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+            if (Test-Path $iscc) {
+              & "$iscc" "$($iss.FullName)" /DAppVersion=${{ github.run_number }} /DSourceDir="$env:GITHUB_WORKSPACE\dist\WhatsAppSender" /DOutputDir="$env:GITHUB_WORKSPACE\dist"
+            } else {
+              Write-Host "Inno Setup not installed; skipping installer."
+            }
           } else {
-            echo "Inno Setup not installed; skipping installer build."
+            Write-Host "No installer.iss found; skipping installer."
           }
 
       - name: Upload installer (if exists)
