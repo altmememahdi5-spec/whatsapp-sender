@@ -1,0 +1,55 @@
+name: Windows EXE Build
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.10.0
+
+      - name: Build app with PyInstaller
+        run: |
+          pyinstaller --noconfirm --clean --onedir --name "WhatsAppSender" --noconsole main.py
+
+      - name: Upload portable app
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhatsAppSender-dist
+          path: dist/WhatsAppSender
+
+      - name: Install Inno Setup (optional)
+        run: |
+          choco install innosetup --yes
+
+      - name: Build installer (optional)
+        shell: pwsh
+        run: |
+          $iscc64 = "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe"
+          $iscc = if (Test-Path $iscc64) { $iscc64 } else { "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+          if (Test-Path $iscc) {
+            & "$iscc" "build/installer.iss" /DAppVersion=${{ github.run_number }} /DSourceDir="dist/WhatsAppSender" /DOutputDir="dist"
+          } else {
+            echo "Inno Setup not installed; skipping installer build."
+          }
+
+      - name: Upload installer (if exists)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhatsAppSender-Setup
+          path: dist/WhatsAppSender-Setup.exe
+          if-no-files-found: ignore
